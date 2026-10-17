@@ -1,7 +1,5 @@
 local M = {}
 
-local tmux = require('wincent.shannon.private.mux.tmux')
-
 local default_agents = { 'pi', 'claude' }
 local agents = default_agents
 
@@ -13,15 +11,25 @@ function M.set_agents(list)
   end
 end
 
-local function find_agent_pane()
-  local current_pane = tmux.current_pane()
+-- tmux comes first because it can run inside a Rex terminal, and then the
+-- panes worth searching are tmux's.
+local function multiplexer()
+  if vim.env.TMUX_PANE then
+    return require('wincent.shannon.private.mux.tmux')
+  elseif vim.env.REX_BLOCK then
+    return require('wincent.shannon.private.mux.rex')
+  end
+end
+
+local function find_agent_pane(mux)
+  local current_pane = mux.current_pane()
   if not current_pane then
     return nil
   end
 
   local pane_pids = {}
-  local pane_output = tmux.list_panes()
-  for pane_id, pane_pid in pane_output:gmatch('(%%[%d]+)%s+(%d+)') do
+  local pane_output = mux.list_panes()
+  for pane_id, pane_pid in pane_output:gmatch('(%S+)%s+(%d+)') do
     if pane_id ~= current_pane then
       pane_pids[tonumber(pane_pid)] = pane_id
     end
@@ -49,7 +57,8 @@ local function find_agent_pane()
 end
 
 function M.get_pane()
-  return find_agent_pane()
+  local mux = multiplexer()
+  return mux and find_agent_pane(mux), mux
 end
 
 function M.prompt(opts)
@@ -243,15 +252,16 @@ function M.send(context, text)
   f:write(prompt)
   f:close()
 
-  local pane = M.get_pane()
+  local pane, mux = M.get_pane()
   if not pane then
     vim.api.nvim_err_writeln(
       'shannon: no agent session (' .. table.concat(agents, ', ')
-        .. ') found in tmux (prompt saved to ' .. tmpfile .. ')'
+        .. ') found in ' .. (mux and mux.name or 'tmux or Rex')
+        .. ' (prompt saved to ' .. tmpfile .. ')'
     )
     return
   end
-  tmux.paste(pane, tmpfile)
+  mux.paste(pane, tmpfile)
   os.remove(tmpfile)
 end
 
